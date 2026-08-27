@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite the manuscript specified in the
+  preferred citation below. This applies especially to the code for growth
+  categories and birth weight, within-animal growth response, and projection
+  to market weight.
+type: software
+title: "Precision feeding and growth variability code repository"
+version: "1.0.0"
+date-released: "2026-08-27"
+license: MIT
+authors:
+  - family-names: Arnaut
+    given-names: Pedro Righetti
+  - family-names: Pomar
+    given-names: Candido
+  - family-names: Hauschild
+    given-names: Luciano
+  - family-names: Remus
+    given-names: Aline
+    email: "alnremus@gmail.com"
+contact:
+  - family-names: Remus
+    given-names: Aline
+    email: "aline.remus@agr.gc.ca"
+preferred-citation:
+  type: article
+  title: >-
+    Increasing the threonine-to-lysine ratio improves the growth performance
+    of slow-growing pigs within group precision feeding
+  authors:
+    - family-names: Arnaut
+      given-names: Pedro Righetti
+    - family-names: Pomar
+      given-names: Candido
+    - family-names: Hauschild
+      given-names: Luciano
+    - family-names: Remus
+      given-names: Aline
+  journal: "Journal of Animal Science"
+  year: 2026
+  status: submitted

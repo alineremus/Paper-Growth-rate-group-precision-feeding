@@ -1,0 +1,375 @@
+---
+title: "If using the code for: Growth categories and birth weight, within-animal growth response, and projection to market weight, please cite the paper"
+subtitle: >-
+  Manuscript: *Increasing the threonine-to-lysine ratio improves the growth
+  performance of slow-growing pigs within group precision feeding*. Submitted
+  to the *Journal of Animal Science* (2026).
+author: "Dr Aline Remus"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+version: "1.0.0"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 4.5, dpi = 150)
+options(stringsAsFactors = FALSE)
+```
+
+# Citation
+
+When using the code for **growth categories and birth weight**, **within-animal
+growth response**, or **projection to market weight**, please cite:
+
+Pedro Righetti Arnaut, Candido Pomar, Luciano Hauschild, and Aline Remus (2026).
+*Increasing the threonine-to-lysine ratio improves the growth performance of
+slow-growing pigs within group precision feeding*. Manuscript submitted to the
+*Journal of Animal Science*.
+
+**Corresponding author:** [aline.remus@agr.gc.ca](mailto:aline.remus@agr.gc.ca)  
+**Additional email:** [alnremus@gmail.com](mailto:alnremus@gmail.com)
+
+## Analytical principle
+
+The analysis follows each pig across growth phases and compares treatment
+responses within predefined growth-rate categories. Using each pig's pre-trial
+growth as its own baseline helps separate the dietary response from its previous
+growth trajectory. Market-weight projections extend the observed growth rates
+and use bootstrap resampling to describe their uncertainty; they are not direct
+measurements at 120 kg.
+
+Base R only. No packages are needed to run the analyses; `rmarkdown` and `knitr` are
+needed only to knit this file.
+
+Two input files, both in the same folder as this document:
+
+* `growth_rates_all_phases.csv` — one row per pig per phase, 59 pigs x 4 phases.
+* `feed_cost_by_pig.csv` — one row per pig, feed cost over the 21-d period.
+
+Treatments are conventional phase feeding at 100% of the ideal threonine to lysine ratio of
+0.65 (`CPF100`) and group precision feeding at 80, 100, 120 and 140% of that ratio
+(`GPF80`, `GPF100`, `GPF120`, `GPF140`). Growth-rate categories (`Gr`) are Fast, Medium, Slow.
+
+# Data
+
+```{r data}
+raw <- read.csv("growth_rates_all_phases.csv")
+str(raw)
+table(raw$Phase)
+
+ORDER <- c("CPF100", "GPF80", "GPF100", "GPF120", "GPF140")
+GRP   <- c("Fast", "Medium", "Slow")
+
+# one row per pig, with the quantities used below
+wide <- function(ph, cols) {
+  s <- raw[raw$Phase == ph, ]
+  s <- s[order(s$Pig), cols]
+  s
+}
+b <- wide("Birth-weaning",     c("Pig","Sex","Treatment","Growth","BW_start_kg","BW_end_kg","ADG_kg_d"))
+n <- wide("Weaning-selection", c("Pig","BW_end_kg","ADG_kg_d"))
+p <- wide("Selection-start",   c("Pig","BW_end_kg","ADG_kg_d"))
+t <- wide("Treatment",         c("Pig","BW_end_kg","ADG_kg_d"))
+
+d <- data.frame(
+  Pig       = b$Pig,
+  Sex       = b$Sex,
+  Treatment = factor(b$Treatment, levels = ORDER),
+  Gr        = factor(b$Growth,    levels = GRP),
+  bw_birth  = b$BW_start_kg,
+  bw_wean   = b$BW_end_kg,
+  bw_sel    = n$BW_end_kg,
+  bw_d1     = p$BW_end_kg,
+  bw_end    = t$BW_end_kg,
+  adg_suck  = b$ADG_kg_d,
+  adg_nurs  = n$ADG_kg_d,
+  adg_pre   = p$ADG_kg_d,
+  adg_trial = t$ADG_kg_d
+)
+d$cell  <- interaction(d$Treatment, d$Gr, drop = TRUE)
+d$dADG  <- d$adg_trial - d$adg_pre     # within-animal change, kg/d
+nrow(d)
+```
+
+A convenience function for mean and standard error.
+
+```{r helper}
+mse <- function(x) c(mean = mean(x), sem = sd(x) / sqrt(length(x)))
+cellmeans <- function(v, f1 = d$Treatment, f2 = d$Gr) tapply(v, list(f1, f2), mean)
+```
+
+# Are the growth-rate categories birth-weight categories?
+
+The categories were formed from pre-trial average daily gain. The question is whether they
+also separate the pigs by birth weight, that is, whether the slow growers are the
+low-birth-weight animals of the population.
+
+```{r birthweight}
+round(t(sapply(GRP, function(g) c(
+  n          = sum(d$Gr == g),
+  birth      = mean(d$bw_birth[d$Gr == g]),
+  birth_sem  = sd(d$bw_birth[d$Gr == g]) / sqrt(sum(d$Gr == g)),
+  weaning    = mean(d$bw_wean[d$Gr == g]),
+  bw_d1      = mean(d$bw_d1[d$Gr == g])
+))), 3)
+
+summary(aov(bw_birth ~ Gr, data = d))
+summary(aov(bw_wean  ~ Gr, data = d))
+summary(aov(bw_d1    ~ Gr, data = d))
+```
+
+Correlation of birth weight with each later trait.
+
+```{r corr}
+targets <- c(adg_suck = "ADG birth to weaning", adg_nurs = "ADG weaning to selection",
+             adg_pre  = "pre-trial ADG",        bw_d1    = "BW at d 1",
+             adg_trial= "ADG during the trial")
+do.call(rbind, lapply(names(targets), function(k) {
+  ct <- cor.test(d$bw_birth, d[[k]])
+  data.frame(trait = targets[[k]], r = round(unname(ct$estimate), 3),
+             r2 = round(unname(ct$estimate)^2, 3), P = signif(ct$p.value, 3))
+}))
+```
+
+Cross-classification of birth-weight tertile against the assigned category.
+
+```{r tertile}
+cut3 <- quantile(d$bw_birth, c(1/3, 2/3))
+d$bw_tertile <- cut(d$bw_birth, c(-Inf, cut3, Inf), labels = c("light","mid","heavy"))
+round(cut3, 2)
+tab <- table(d$bw_tertile, d$Gr)
+tab
+chisq.test(tab)
+```
+
+# When did the body weight advantage of the GPF140 slow growers appear?
+
+```{r gpf140-slow}
+sl <- d[d$Gr == "Slow", ]
+round(do.call(rbind, lapply(ORDER, function(tr) {
+  s <- sl[sl$Treatment == tr, ]
+  c(n = nrow(s), birth = mean(s$bw_birth), weaning = mean(s$bw_wean),
+    selection = mean(s$bw_sel), d1 = mean(s$bw_d1))
+})), 2) -> tabsl
+rownames(tabsl) <- ORDER; tabsl
+
+for (k in c("bw_birth","bw_wean","bw_sel","bw_d1")) {
+  f <- summary(aov(sl[[k]] ~ sl$Treatment))[[1]]
+  cat(sprintf("%-9s F(%d,%d) = %5.2f   P = %.3f   GPF140 - CPF100 = %+6.2f kg\n",
+              k, f$Df[1], f$Df[2], f$`F value`[1], f$`Pr(>F)`[1],
+              mean(sl[[k]][sl$Treatment == "GPF140"]) -
+              mean(sl[[k]][sl$Treatment == "CPF100"])))
+}
+```
+
+Average daily gain of the slow growers in each interval, before and during the trial.
+
+```{r slow-adg}
+round(do.call(rbind, lapply(ORDER, function(tr) {
+  s <- sl[sl$Treatment == tr, ]
+  c(suckling = mean(s$adg_suck), nursery = mean(s$adg_nurs),
+    pre_trial = mean(s$adg_pre), trial = mean(s$adg_trial))
+})), 3) -> tabadg
+rownames(tabadg) <- ORDER; tabadg
+```
+
+# Within-animal change in average daily gain
+
+Each pig is its own baseline, so a growth trajectory established before the diets were applied
+cancels out.
+
+```{r dadg}
+round(cellmeans(1000 * d$dADG), 0)          # g/d
+round(tapply(1000 * d$dADG, list(d$Treatment, d$Gr),
+             function(x) sd(x)/sqrt(length(x))), 0)   # SEM
+
+for (g in GRP) {
+  s <- d[d$Gr == g, ]
+  f <- summary(aov(dADG ~ Treatment, data = s))[[1]]
+  gp <- s[s$Treatment != "CPF100", ]
+  ratio <- c(GPF80 = 0.8, GPF100 = 1.0, GPF120 = 1.2, GPF140 = 1.4)[as.character(gp$Treatment)]
+  lin <- summary(lm(dADG ~ ratio, data = data.frame(dADG = gp$dADG, ratio = ratio)))
+  cat(sprintf("%-7s treatment P = %.3f | linear Thr trend within GPF P = %.3f | GPF140 - CPF100 = %+4.0f g/d\n",
+              g, f$`Pr(>F)`[1], coef(lin)[2, 4],
+              1000 * (mean(s$dADG[s$Treatment == "GPF140"]) -
+                      mean(s$dADG[s$Treatment == "CPF100"]))))
+}
+```
+
+# Projection to a 120 kg body weight
+
+Nothing was observed at 120 kg. The trial lasted 21 d; what follows is what the measured
+average daily gain would imply if it continued unchanged. Two bases are computed.
+
+**Basis 1, cell ADG adjusted for initial body weight.** Average daily gain is adjusted to a
+common initial body weight by the pooled within-cell regression of ADG on initial body weight,
+and the projection starts from that common weight.
+
+**Basis 2, within-animal change.** For each cell, ADG is the mean pre-trial ADG of the
+category plus the mean within-animal change of that cell. Differences among treatments then
+come only from the change each animal showed when the diets were applied.
+
+```{r projection-functions}
+ancova_slope <- function(df) {
+  num <- den <- 0
+  for (cl in levels(droplevels(df$cell))) {
+    s <- df[df$cell == cl, ]
+    num <- num + sum((s$bw_d1 - mean(s$bw_d1)) * (s$adg_trial - mean(s$adg_trial)))
+    den <- den + sum((s$bw_d1 - mean(s$bw_d1))^2)
+  }
+  num / den
+}
+
+days_basis1 <- function(df) {                       # days from the END of the period
+  B <- mean(df$bw_d1); bta <- ancova_slope(df)
+  out <- matrix(NA, length(ORDER), length(GRP), dimnames = list(ORDER, GRP))
+  for (tr in ORDER) for (g in GRP) {
+    s <- df[df$Treatment == tr & df$Gr == g, ]
+    adg <- mean(s$adg_trial) + bta * (B - mean(s$bw_d1))
+    out[tr, g] <- (120 - B) / adg - 21
+  }
+  out
+}
+
+days_basis2 <- function(df) {
+  out <- matrix(NA, length(ORDER), length(GRP), dimnames = list(ORDER, GRP))
+  for (g in GRP) {
+    sg   <- df[df$Gr == g, ]
+    preg <- mean(sg$adg_pre); bwg <- mean(sg$bw_d1)
+    for (tr in ORDER) {
+      s   <- sg[sg$Treatment == tr, ]
+      adg <- preg + mean(s$dADG)
+      out[tr, g] <- (120 - (bwg + 21 * adg)) / adg
+    }
+  }
+  out
+}
+
+round(days_basis1(d), 1)
+round(days_basis2(d), 1)
+```
+
+## Bootstrap
+
+Whole animals are resampled with replacement within each treatment x growth-rate cell. 
+```{r bootstrap, cache=TRUE}
+set.seed(20260827)
+R <- 4000
+boot1 <- boot2 <- array(NA, c(R, length(ORDER), length(GRP)),
+                        dimnames = list(NULL, ORDER, GRP))
+cells <- split(seq_len(nrow(d)), d$cell)
+for (i in seq_len(R)) {
+  idx <- unlist(lapply(cells, function(ix) sample(ix, length(ix), replace = TRUE)))
+  bd  <- d[idx, ]
+  boot1[i, , ] <- days_basis1(bd)
+  boot2[i, , ] <- days_basis2(bd)
+}
+
+contrast <- function(bt) {
+  out <- do.call(rbind, lapply(GRP, function(g)
+    do.call(rbind, lapply(setdiff(ORDER, "CPF100"), function(tr) {
+      v <- bt[, "CPF100", g] - bt[, tr, g]
+      data.frame(Gr = g, Treatment = tr, median = round(median(v), 1),
+                 lower = round(quantile(v, .025), 1),
+                 upper = round(quantile(v, .975), 1), row.names = NULL)
+    }))))
+  out
+}
+contrast(boot1)   # basis 1
+contrast(boot2)   # basis 2
+```
+
+## Figure: projected trajectories
+
+```{r trajectories, fig.width=11, fig.height=3.6}
+B   <- mean(d$bw_d1); bta <- ancova_slope(d)
+col <- c(Fast = "#d95f02", Medium = "#1f77b4", Slow = "#2ca02c")
+pch <- c(Fast = 19, Medium = 15, Slow = 17)
+op  <- par(mfrow = c(1, 5), mar = c(4, 1.2, 2.4, 0.6), oma = c(0, 3.4, 0, 0), las = 1)
+for (tr in ORDER) {
+  plot(NA, xlim = c(-23, 62), ylim = c(B - 2, 128), xlab = "", ylab = "",
+       main = tr, yaxt = if (tr == ORDER[1]) "s" else "n")
+  abline(h = 120, lty = 2, col = "grey60"); abline(v = 0, col = "grey60")
+  for (g in GRP) {
+    s   <- d[d$Treatment == tr & d$Gr == g, ]
+    adg <- mean(s$adg_trial) + bta * (B - mean(s$bw_d1))
+    dd  <- (120 - B) / adg - 21
+    lines(c(-21, 0), B + adg * c(0, 21), col = col[g], lwd = 2.4)
+    lines(c(0, dd),  B + adg * c(21, dd + 21), col = col[g], lwd = 1.8, lty = 2)
+    points(dd, 120, col = col[g], pch = pch[g], cex = 1.2)
+  }
+  if (tr == ORDER[1]) legend("topleft", GRP, col = col[GRP], pch = pch[GRP],
+                             bty = "n", cex = 0.9)
+}
+mtext("Body weight, kg", side = 2, outer = TRUE, line = 2, las = 0)
+mtext("Days from the end of the experimental period", side = 1, outer = TRUE, line = -1.4)
+par(op)
+```
+
+# Feed cost over the experimental period
+
+Each pig's daily blend priced with 2025 reference ingredient costs. The prices are not current,
+so only the comparison among treatments should be read from them.
+
+## Ingredient reference costs — editable upstream inputs
+
+The following values document the ingredient prices used upstream to prepare
+`feed_cost_by_pig.csv`. They are shown here to make the assumptions transparent
+and easy to revise. **Editing this table alone does not recalculate the results
+below**; after changing an ingredient price, the upstream feed-cost calculation
+and `feed_cost_by_pig.csv` must also be updated.
+
+Values of `$0.000` for soybean hulls, salt, and choline chloride are placeholders
+for missing prices, not evidence that these ingredients have no cost. Until
+invoice or reference prices are entered, absolute feed costs may be
+underestimated.
+
+| Ingredient | Cost, USD/t | Cost, USD/kg | Source | Source / note | Used in upstream formulas? | Input status |
+|:--|--:|--:|:--|:--|:--:|:--|
+| Corn | $201.760 | $0.202 | Statistics Canada, 2025 | [Statistics Canada table 32-10-0077-01](https://doi.org/10.25318/3210007701-eng) | Yes | Provided |
+| Wheat | $254.060 | $0.254 | Statistics Canada, 2025 | [Statistics Canada table 32-10-0077-01](https://doi.org/10.25318/3210007701-eng) | Yes | Provided |
+| Wheat shorts | $108.930 | $0.109 | USDA, 2025 | USDA *National Mill-Feeds and Miscellaneous Feedstuff Report* (as cited in the supplied document) | No | Provided |
+| Timothy meal | $335.000 | $0.335 | USDA, 2025 | USDA *National Mill-Feeds and Miscellaneous Feedstuff Report* (as cited in the supplied document) | No | Provided |
+| Soybean meal | $408.090 | $0.408 | Statistics Canada, 2025 | [Statistics Canada table 32-10-0077-01](https://doi.org/10.25318/3210007701-eng) | Yes | Provided |
+| Limestone | $1,800.000 | $1.800 | Calculated[^calculated-cost] | Calculated by difference of inclusion into experimental diets (supplied Table S1.1 footnote) | Yes | Provided |
+| Animal fat | $1,247.600 | $1.248 | Statistics Canada, 2025 | [Statistics Canada table 32-10-0077-01](https://doi.org/10.25318/3210007701-eng) | No | Provided |
+| L-Lysine | $1,888.000 | $1.888 | All About Feed, 2025b | [Lysine HCl market price](https://www.allaboutfeed.net/market-prices/lysine-hcl/) | Yes | Provided |
+| L-Tryptophan | $6,750.000 | $6.750 | All About Feed, 2025b | All About Feed, 2025b, as supplied; the bibliography in the supplied document points to the L-Lysine HCl page | Yes | Provided |
+| DL-Methionine | $3,230.000 | $3.230 | All About Feed, 2025a | [DL-Methionine market price](https://www.allaboutfeed.net/market-prices/dl-methionine/) | Yes | Provided |
+| L-Threonine | $2,080.000 | $2.080 | All About Feed, 2025c | [Threonine market price](https://www.allaboutfeed.net/market-prices/threonine/) | Yes | Provided |
+| L-Valine | $10,000.000 | $10.000 | All About Feed, 2025b | All About Feed, 2025b, as supplied; the bibliography in the supplied document points to the L-Lysine HCl page | Yes | Provided |
+| Vitamin-mineral complex | $10,000.000 | $10.000 | Calculated[^calculated-cost] | Calculated by difference of inclusion into experimental diets (supplied Table S1.1 footnote) | Yes | Provided |
+| Monocalcium phosphate | $2,500.000 | $2.500 | Calculated[^calculated-cost] | Calculated by difference of inclusion into experimental diets (supplied Table S1.1 footnote) | Yes | Provided |
+| Phytase | $2,000.000 | $2.000 | Calculated[^calculated-cost] | Calculated by difference of inclusion into experimental diets (supplied Table S1.1 footnote) | Yes | Provided |
+| Soybean hulls | $0.000 | $0.000 | Not provided | Not available in the supplied reference-cost table | Yes | **Missing — enter invoice/reference price** |
+| Salt | $0.000 | $0.000 | Not provided | Not available in the supplied reference-cost table | Yes | **Missing — enter invoice/reference price** |
+| Choline chloride | $0.000 | $0.000 | Not provided | Not available in the supplied reference-cost table | Yes | **Missing — enter invoice/reference price** |
+
+[^calculated-cost]: Calculated value supplied in the source document rather
+    than a directly observed market quotation.
+
+```{r cost}
+fc <- read.csv("feed_cost_by_pig.csv")
+fc$Treatment <- factor(fc$Treatment, levels = ORDER)
+fc$Growth    <- factor(fc$Growth,    levels = GRP)
+fc$per_day   <- fc$Feed_cost_USD_21d / fc$Days
+
+round(tapply(fc$per_day, list(fc$Treatment, fc$Growth), mean), 3)
+round(tapply(fc$per_day, fc$Treatment, mean), 3)
+round(100 * tapply(fc$per_day, fc$Treatment, mean) /
+      mean(fc$per_day[fc$Treatment == "CPF100"]), 1)     # relative to CPF100 = 100
+round(tapply(fc$Thr_cost_USD_21d, fc$Treatment, mean), 3)
+round(100 * tapply(fc$Thr_cost_USD_21d, fc$Treatment, mean) /
+      tapply(fc$Feed_cost_USD_21d, fc$Treatment, mean), 1)   # % of feed cost
+```
+
+# Session information
+
+```{r session}
+sessionInfo()
+```
